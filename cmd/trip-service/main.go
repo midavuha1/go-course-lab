@@ -1,0 +1,90 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/midavuha1/go-course-lab/api"
+	"github.com/midavuha1/go-course-lab/internal/config"
+	"github.com/midavuha1/go-course-lab/internal/handler"
+	"github.com/midavuha1/go-course-lab/internal/postgres"
+	"github.com/midavuha1/go-course-lab/internal/service"
+)
+
+func main() {
+	if err := run(); err != nil {
+		slog.Error("service stopped", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	pool, err := postgres.NewPool(ctx, cfg)
+	if err != nil {
+		return fmt.Errorf("init database pool: %w", err)
+	}
+	defer pool.Close()
+
+	txManager := postgres.NewTxManager(pool)
+	repo := postgres.NewTripRepository(txManager, cfg.DatabaseQueryTimeout)
+	svc := service.NewTripService(txManager, repo)
+	h := handler.New(svc, pool, cfg.DatabaseQueryTimeout)
+
+	r := chi.NewRouter()
+	api.HandlerWithOptions(h, api.ChiServerOptions{
+		BaseRouter:       r,
+		ErrorHandlerFunc: h.HandleBindError,
+	})
+
+	srv := &http.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           r,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		slog.Info("starting HTTP server", "addr", cfg.HTTPAddr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- fmt.Errorf("listen and serve: %w", err)
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		slog.Info("shutdown signal received")
+	case err := <-errCh:
+		return fmt.Errorf("server failed: %w", err)
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+	defer cancel()
+
+	slog.Info("graceful shutdown initiated", "timeout", cfg.ShutdownTimeout)
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("server shutdown failed: %w", err)
+	}
+
+	slog.Info("server stopped gracefully")
+	return nil
+}
