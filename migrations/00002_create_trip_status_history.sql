@@ -1,3 +1,4 @@
+-- +goose Up
 CREATE TABLE trip_status_history (
     id          BIGSERIAL PRIMARY KEY,
     trip_id     UUID NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
