@@ -35,7 +35,6 @@ func writeInvalidRequest(w http.ResponseWriter, r *http.Request, detail string) 
 	writeProblem(w, r, http.StatusBadRequest, "invalid-request", "Invalid request", "invalid_request", detail)
 }
 
-// writeError переводит доменную ошибку в HTTP-ответ. Единственное место такого перевода.
 func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, model.ErrDriverBusy):

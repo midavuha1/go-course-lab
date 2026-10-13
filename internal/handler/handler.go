@@ -1,8 +1,10 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"time"
@@ -14,7 +16,6 @@ import (
 	"github.com/midavuha1/go-course-lab/internal/service"
 )
 
-// Pinger: всё, что хендлеру нужно знать про базу.
 type Pinger interface {
 	Ping(ctx context.Context) error
 }
@@ -29,10 +30,8 @@ func New(trips *service.TripService, db Pinger, pingTimeout time.Duration) *Hand
 	return &Handler{trips: trips, db: db, pingTimeout: pingTimeout}
 }
 
-// Компилятор проверит, что реализованы все пять методов из контракта.
 var _ api.ServerInterface = (*Handler)(nil)
 
-// HandleBindError вызывается сгенерированным кодом, когда tripId не UUID и т.п.
 func (h *Handler) HandleBindError(w http.ResponseWriter, r *http.Request, err error) {
 	writeInvalidRequest(w, r, err.Error())
 }
@@ -105,10 +104,27 @@ func validate(b api.TripData) string {
 }
 
 func (h *Handler) CreateTrip(w http.ResponseWriter, r *http.Request, _ api.CreateTripParams) {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	// читаем тело целиком (не больше 1 МБ), чтобы проверить его дважды
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err != nil {
+		writeInvalidRequest(w, r, "cannot read body: "+err.Error())
+		return
+	}
 
+	// шаг 1: смотрим на сырой JSON, есть ли все обязательные поля и нет ли null
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		writeInvalidRequest(w, r, "invalid JSON body: "+err.Error())
+		return
+	}
+	if msg := checkRequired(fields); msg != "" {
+		writeInvalidRequest(w, r, msg)
+		return
+	}
+
+	// шаг 2: теперь разбираем в структуру
 	var body api.TripData
-	dec := json.NewDecoder(r.Body)
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&body); err != nil {
 		writeInvalidRequest(w, r, "invalid JSON body: "+err.Error())
@@ -135,6 +151,26 @@ func (h *Handler) CreateTrip(w http.ResponseWriter, r *http.Request, _ api.Creat
 
 	w.Header().Set("Location", "/api/v1/trips/"+created.ID.String())
 	writeJSON(w, http.StatusCreated, toAPI(created))
+}
+
+func checkRequired(fields map[string]any) string {
+	for _, k := range []string{"user_id", "driver_id", "start_point", "end_point", "price"} {
+		if v, ok := fields[k]; !ok || v == nil {
+			return k + " is required"
+		}
+	}
+	for _, k := range []string{"start_point", "end_point"} {
+		p, ok := fields[k].(map[string]any)
+		if !ok {
+			return k + " must be an object"
+		}
+		for _, f := range []string{"latitude", "longitude"} {
+			if v, ok := p[f]; !ok || v == nil {
+				return k + "." + f + " is required"
+			}
+		}
+	}
+	return ""
 }
 
 func (h *Handler) FinishTrip(w http.ResponseWriter, r *http.Request, tripId api.TripId) {
