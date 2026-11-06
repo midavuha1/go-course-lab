@@ -15,8 +15,6 @@ import (
 	"github.com/midavuha1/go-course-lab/internal/model"
 )
 
-var psql = sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
-
 var tripColumns = []string{
 	"id", "user_id", "driver_id",
 	"start_latitude", "start_longitude", "end_latitude", "end_longitude",
@@ -36,17 +34,22 @@ func scanTrip(row pgx.Row) (model.Trip, error) {
 type TripRepository struct {
 	tx           *TxManager
 	queryTimeout time.Duration
+	psql         sq.StatementBuilderType
 }
 
 func NewTripRepository(tx *TxManager, queryTimeout time.Duration) *TripRepository {
-	return &TripRepository{tx: tx, queryTimeout: queryTimeout}
+	return &TripRepository{
+		tx:           tx,
+		queryTimeout: queryTimeout,
+		psql:         sq.StatementBuilder.PlaceholderFormat(sq.Dollar),
+	}
 }
 
 func (r *TripRepository) AddStatusHistory(ctx context.Context, tripID uuid.UUID, from *string, to, reason string) error {
 	ctx, cancel := context.WithTimeout(ctx, r.queryTimeout)
 	defer cancel()
 
-	sql, args, err := psql.Insert("trip_status_history").
+	sql, args, err := r.psql.Insert("trip_status_history").
 		Columns("trip_id", "from_status", "to_status", "reason").
 		Values(tripID, from, to, reason).
 		ToSql()
@@ -64,7 +67,7 @@ func (r *TripRepository) Create(ctx context.Context, t model.Trip) error {
 	ctx, cancel := context.WithTimeout(ctx, r.queryTimeout)
 	defer cancel()
 
-	sql, args, err := psql.Insert("trips").
+	sql, args, err := r.psql.Insert("trips").
 		Columns("id", "user_id", "driver_id", "start_latitude", "start_longitude", "end_latitude", "end_longitude", "price", "status", "started_at").
 		Values(t.ID, t.UserID, t.DriverID, t.Start.Latitude, t.Start.Longitude, t.End.Latitude, t.End.Longitude, t.Price, t.Status, t.StartedAt).
 		ToSql()
@@ -74,8 +77,7 @@ func (r *TripRepository) Create(ctx context.Context, t model.Trip) error {
 
 	_, err = r.tx.Executor(ctx).Exec(ctx, sql, args...)
 	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "trips_driver_active_unique_idx" {
+		if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok && pgErr.Code == "23505" && pgErr.ConstraintName == "trips_driver_active_unique_idx" {
 			return model.ErrDriverBusy
 		}
 		return fmt.Errorf("insert trip: %w", err)
@@ -87,7 +89,7 @@ func (r *TripRepository) GetByID(ctx context.Context, id uuid.UUID) (model.Trip,
 	ctx, cancel := context.WithTimeout(ctx, r.queryTimeout)
 	defer cancel()
 
-	sql, args, err := psql.Select(tripColumns...).
+	sql, args, err := r.psql.Select(tripColumns...).
 		From("trips").
 		Where(sq.Eq{"id": id}).
 		ToSql()
@@ -110,7 +112,7 @@ func (r *TripRepository) Finish(ctx context.Context, id uuid.UUID, now time.Time
 	ctx, cancel := context.WithTimeout(ctx, r.queryTimeout)
 	defer cancel()
 
-	sql, args, err := psql.Update("trips").
+	sql, args, err := r.psql.Update("trips").
 		Set("status", "completed").
 		Set("finished_at", now).
 		Set("updated_at", now).

@@ -7,6 +7,13 @@ import (
 	"github.com/google/uuid"
 )
 
+const (
+	StatusActive       = "active"
+	StatusCompleted    = "completed"
+	ReasonTripCreated  = "trip created"
+	ReasonTripFinished = "trip finished"
+)
+
 var (
 	ErrTripNotFound  = errors.New("trip not found")
 	ErrTripCompleted = errors.New("trip already completed")

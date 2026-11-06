@@ -7,19 +7,25 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/midavuha1/go-course-lab/internal/model"
-	"github.com/midavuha1/go-course-lab/internal/postgres"
 )
 
 type TxManager interface {
 	Do(ctx context.Context, fn func(ctx context.Context) error) error
 }
 
-type TripService struct {
-	tx   TxManager
-	repo *postgres.TripRepository
+type TripRepository interface {
+	Create(ctx context.Context, t model.Trip) error
+	GetByID(ctx context.Context, id uuid.UUID) (model.Trip, error)
+	Finish(ctx context.Context, id uuid.UUID, now time.Time) (model.Trip, error)
+	AddStatusHistory(ctx context.Context, tripID uuid.UUID, from *string, to, reason string) error
 }
 
-func NewTripService(tx TxManager, repo *postgres.TripRepository) *TripService {
+type TripService struct {
+	tx   TxManager
+	repo TripRepository
+}
+
+func NewTripService(tx TxManager, repo TripRepository) *TripService {
 	return &TripService{tx: tx, repo: repo}
 }
 
