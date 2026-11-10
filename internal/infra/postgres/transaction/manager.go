@@ -1,4 +1,4 @@
-package postgres
+package transaction
 
 import (
 	"context"
@@ -19,19 +19,19 @@ type Executor interface {
 }
 
 var (
-	_ Executor = (pgx.Tx)(nil)
+	_ Executor = pgx.Tx(nil)
 	_ Executor = (*pgxpool.Pool)(nil)
 )
 
-type TxManager struct {
+type Manager struct {
 	pool *pgxpool.Pool
 }
 
-func NewTxManager(pool *pgxpool.Pool) *TxManager {
-	return &TxManager{pool: pool}
+func New(pool *pgxpool.Pool) *Manager {
+	return &Manager{pool: pool}
 }
 
-func (m *TxManager) Do(ctx context.Context, fn func(ctx context.Context) error) (err error) {
+func (m *Manager) Do(ctx context.Context, fn func(ctx context.Context) error) (err error) {
 	if _, ok := ctx.Value(txKey{}).(pgx.Tx); ok {
 		return fn(ctx)
 	}
@@ -65,7 +65,7 @@ func (m *TxManager) Do(ctx context.Context, fn func(ctx context.Context) error) 
 	return nil
 }
 
-func (m *TxManager) Executor(ctx context.Context) Executor {
+func (m *Manager) Executor(ctx context.Context) Executor {
 	if tx, ok := ctx.Value(txKey{}).(pgx.Tx); ok {
 		return tx
 	}

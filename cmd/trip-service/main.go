@@ -9,20 +9,14 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
-	"github.com/go-chi/chi/v5"
-
-	"github.com/midavuha1/go-course-lab/api"
 	"github.com/midavuha1/go-course-lab/internal/config"
-	"github.com/midavuha1/go-course-lab/internal/handler"
-	"github.com/midavuha1/go-course-lab/internal/postgres"
-	"github.com/midavuha1/go-course-lab/internal/service"
+	"github.com/midavuha1/go-course-lab/internal/container"
 )
 
 func main() {
 	if err := run(); err != nil {
-		slog.Error("service stopped", "error", err)
+		slog.Error("service stopped", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 }
@@ -33,64 +27,44 @@ func run() error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	var level slog.Level
-	if err := level.UnmarshalText([]byte(cfg.LogLevel)); err != nil {
-		return fmt.Errorf("parse LOG_LEVEL: %w", err)
-	}
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})))
-
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := postgres.NewPool(ctx, cfg)
+	c, err := container.New(ctx, cfg)
 	if err != nil {
-		return fmt.Errorf("init database pool: %w", err)
+		return fmt.Errorf("build container: %w", err)
 	}
-	defer pool.Close()
-
-	txManager := postgres.NewTxManager(pool)
-	repo := postgres.NewTripRepository(txManager, cfg.DatabaseQueryTimeout)
-	svc := service.NewTripService(txManager, repo)
-	h := handler.New(svc, pool, cfg.DatabaseQueryTimeout)
-
-	r := chi.NewRouter()
-	api.HandlerWithOptions(h, api.ChiServerOptions{
-		BaseRouter:       r,
-		ErrorHandlerFunc: h.HandleBindError,
-	})
-
-	srv := &http.Server{
-		Addr:              cfg.HTTPAddr,
-		Handler:           r,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      10 * time.Second,
-		IdleTimeout:       60 * time.Second,
-	}
+	logger := c.Logger
 
 	errCh := make(chan error, 1)
 	go func() {
-		slog.Info("starting HTTP server", "addr", cfg.HTTPAddr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errCh <- fmt.Errorf("listen and serve: %w", err)
+		logger.Info("starting HTTP server", slog.String("addr", cfg.HTTPAddr))
+		if err := c.Server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
 		}
 	}()
 
+	var runErr error
 	select {
 	case <-ctx.Done():
-		slog.Info("shutdown signal received")
+		logger.Info("shutdown signal received")
 	case err := <-errCh:
-		return fmt.Errorf("server failed: %w", err)
+		runErr = fmt.Errorf("listen and serve: %w", err)
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
 
-	slog.Info("graceful shutdown initiated", "timeout", cfg.ShutdownTimeout)
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("server shutdown failed: %w", err)
+	logger.Info("graceful shutdown initiated", slog.Duration("timeout", cfg.ShutdownTimeout))
+	if err := c.Server.Shutdown(shutdownCtx); err != nil {
+		runErr = errors.Join(runErr, fmt.Errorf("server shutdown: %w", err))
 	}
 
-	slog.Info("server stopped gracefully")
-	return nil
+	if err := c.Close(shutdownCtx); err != nil {
+		runErr = errors.Join(runErr, fmt.Errorf("close dependencies: %w", err))
+	}
+	if runErr == nil {
+		logger.Info("server stopped gracefully")
+	}
+	return runErr
 }
