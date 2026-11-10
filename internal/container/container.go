@@ -1,5 +1,3 @@
-// Package container создаёт все зависимости сервиса и связывает их.
-// Это единственное место, где вызываются конструкторы инфраструктуры и слоёв.
 package container
 
 import (
@@ -10,10 +8,12 @@ import (
 	"net/http"
 	"time"
 
-	metricnoop "go.opentelemetry.io/otel/metric/noop"
+	"github.com/exaring/otelpgx"
+	"go.opentelemetry.io/otel"
 
 	"github.com/midavuha1/go-course-lab/internal/config"
 	"github.com/midavuha1/go-course-lab/internal/http/health"
+	"github.com/midavuha1/go-course-lab/internal/http/middleware"
 	"github.com/midavuha1/go-course-lab/internal/http/router"
 	createhttp "github.com/midavuha1/go-course-lab/internal/http/trip/create"
 	finishhttp "github.com/midavuha1/go-course-lab/internal/http/trip/finish"
@@ -45,9 +45,24 @@ func New(ctx context.Context, cfg config.Config) (_ *Container, err error) {
 		}
 	}()
 
-	meterProvider := metricnoop.NewMeterProvider()
+	providers, err := telemetry.Setup(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("setup telemetry: %w", err)
+	}
 
-	pool, err := postgres.NewPool(ctx, cfg, nil)
+	c.closers = append(c.closers, providers.Shutdown)
+
+	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
+		logger.Warn("telemetry export failed", slog.String("error", err.Error()))
+	}))
+
+	dbTracer := otelpgx.NewTracer(
+		otelpgx.WithTracerProvider(providers.Tracer),
+		otelpgx.WithMeterProvider(providers.Meter),
+		otelpgx.WithMetricOperationName(otelpgx.SQLOperationName),
+	)
+
+	pool, err := postgres.NewPool(ctx, cfg, dbTracer)
 	if err != nil {
 		return nil, fmt.Errorf("init database pool: %w", err)
 	}
@@ -59,7 +74,12 @@ func New(ctx context.Context, cfg config.Config) (_ *Container, err error) {
 	txManager := transaction.New(pool)
 	tripRepo := triprepo.New(txManager, cfg.DatabaseQueryTimeout)
 
-	tripMetrics, err := telemetry.NewTripMetrics(meterProvider, tripRepo)
+	tripMetrics, err := telemetry.NewTripMetrics(providers.Meter, tripRepo)
+	if err != nil {
+		return nil, err
+	}
+
+	httpMetrics, err := middleware.NewHTTPMetrics(providers.Meter)
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +93,12 @@ func New(ctx context.Context, cfg config.Config) (_ *Container, err error) {
 		Get:    gethttp.New(getUC, logger),
 		Finish: finishhttp.New(finishUC, logger),
 		Health: health.New(pool, cfg.DatabaseQueryTimeout, logger),
-	}, logger)
+	}, logger,
+		middleware.Recover(logger),
+		middleware.Tracing(providers.Tracer, providers.Propagator),
+		middleware.Logging(logger),
+		httpMetrics.Middleware(),
+	)
 
 	c.Server = &http.Server{
 		Addr:              cfg.HTTPAddr,
