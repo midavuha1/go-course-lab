@@ -8,6 +8,8 @@ import (
 	"github.com/midavuha1/go-course-lab/internal/domain/trip"
 )
 
+const fieldBody = "body"
+
 var (
 	requiredFields = []string{"user_id", "driver_id", "start_point", "end_point", "price"}
 	pointFields    = []string{"start_point", "end_point"}
@@ -17,7 +19,7 @@ var (
 func decode(raw []byte) (api.TripData, error) {
 	var fields map[string]any
 	if err := json.Unmarshal(raw, &fields); err != nil {
-		return api.TripData{}, &trip.ValidationError{Field: "body", Reason: "must be a JSON object: " + err.Error()}
+		return api.TripData{}, &trip.ValidationError{Field: fieldBody, Reason: "must be a JSON object: " + err.Error()}
 	}
 	if err := checkRequired(fields); err != nil {
 		return api.TripData{}, err
@@ -27,7 +29,7 @@ func decode(raw []byte) (api.TripData, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&body); err != nil {
-		return api.TripData{}, &trip.ValidationError{Field: "body", Reason: "is invalid: " + err.Error()}
+		return api.TripData{}, &trip.ValidationError{Field: fieldBody, Reason: "is invalid: " + err.Error()}
 	}
 	return body, nil
 }

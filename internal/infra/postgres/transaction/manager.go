@@ -19,7 +19,7 @@ type Executor interface {
 }
 
 var (
-	_ Executor = (pgx.Tx)(nil)
+	_ Executor = pgx.Tx(nil)
 	_ Executor = (*pgxpool.Pool)(nil)
 )
 

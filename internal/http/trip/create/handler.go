@@ -10,7 +10,7 @@ import (
 	"github.com/midavuha1/go-course-lab/internal/http/respond"
 )
 
-const maxBodyBytes = 1 << 20 // 1 МБ
+const maxBodyBytes = 1 << 20
 
 type Handler struct {
 	uc     usecase
@@ -24,7 +24,7 @@ func New(uc usecase, logger *slog.Logger) *Handler {
 func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	if err != nil {
-		domainerror.Write(w, r, h.logger, &trip.ValidationError{Field: "body", Reason: "cannot be read"})
+		domainerror.Write(w, r, h.logger, &trip.ValidationError{Field: fieldBody, Reason: "cannot be read"})
 		return
 	}
 
